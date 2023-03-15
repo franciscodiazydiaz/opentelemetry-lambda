@@ -108,6 +108,7 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	ctx := context.Background()
 	messages, err := parseLogsAPIPayload(body)
 	logs := plog.NewLogs()
 
@@ -154,15 +155,22 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 		// Lambda dropped log entries.
 		// case "platform.logsDropped":
 	}
+
 	if len(r.lastPlatformStartTime) > 0 && len(r.lastPlatformEndTime) > 0 {
 		if td, err := r.createPlatformInitSpan(r.lastPlatformStartTime, r.lastPlatformEndTime); err == nil {
-			err := r.tracesConsumer.ConsumeTraces(context.Background(), td)
+			err := r.tracesConsumer.ConsumeTraces(ctx, td)
 			if err == nil {
 				r.lastPlatformEndTime = ""
 				r.lastPlatformStartTime = ""
 			} else {
 				r.logger.Error("error receiving traces", zap.Error(err))
 			}
+		}
+	}
+
+	if logs.LogRecordCount() > 0 {
+		if err = r.logsConsumer.ConsumeLogs(ctx, logs); err != nil {
+			r.logger.Error("unable to consume logs", zap.Error(err))
 		}
 	}
 
