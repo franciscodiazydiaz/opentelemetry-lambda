@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	semconv "go.opentelemetry.io/collector/semconv/v1.5.0"
@@ -108,6 +109,7 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 	}
 
 	messages, err := parseLogsAPIPayload(body)
+	logs := plog.NewLogs()
 
 	/*
 		var slice []event
@@ -130,6 +132,7 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 			r.lastPlatformEndTime = message.time.String()
 		case string(telemetryapi.Function):
 			r.logger.Info(fmt.Sprintf("Function Log Event: %s", message.stringRecord), zap.Any("event", message))
+			r.processLogsMessage(logs, message)
 		}
 		// TODO: add support for additional events, see https://docs.aws.amazon.com/lambda/latest/dg/telemetry-api.html
 		// A report of function initialization.
@@ -251,5 +254,16 @@ func (r *telemetryAPIReceiver) registerTraceConsumer(tc consumer.Traces) error {
 		return component.ErrNilNextConsumer
 	}
 	r.tracesConsumer = tc
+	return nil
+}
+
+func (r *telemetryAPIReceiver) processLogsMessage(logs plog.Logs, message LambdaLogAPIMessage) error {
+	rl := logs.ResourceLogs().AppendEmpty()
+	ts := time.UnixMilli(message.time.Unix())
+	logRecord := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	//logRecord.SetObservedTimestamp(now)
+	logRecord.SetTimestamp(pcommon.NewTimestampFromTime(ts))
+	logRecord.Body().SetStr(message.stringRecord)
+
 	return nil
 }
