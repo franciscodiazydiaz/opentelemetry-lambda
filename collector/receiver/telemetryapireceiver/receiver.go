@@ -267,6 +267,7 @@ func (r *telemetryAPIReceiver) registerTraceConsumer(tc consumer.Traces) error {
 
 func (r *telemetryAPIReceiver) processLogsMessage(logs plog.Logs, message LambdaLogAPIMessage) error {
 	rl := logs.ResourceLogs().AppendEmpty()
+	r.resource.CopyTo(rl.Resource())
 	ts := time.UnixMilli(message.time.Unix())
 	logRecord := rl.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
 	//logRecord.SetObservedTimestamp(now)
