@@ -21,6 +21,9 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
+
+	"github.com/open-telemetry/opentelemetry-lambda/collector/internal/sharedcomponent"
+	//"go.opentelemetry.io/collector/internal/sharedcomponent"
 )
 
 const (
@@ -39,14 +42,60 @@ func NewFactory(extensionID string) receiver.Factory {
 				extensionID: extensionID,
 			}
 		},
-		receiver.WithTraces(createTracesReceiver, stability))
+		receiver.WithTraces(createTracesReceiver, stability),
+		receiver.WithLogs(createLogsReceiver, stability))
 }
 
-func createTracesReceiver(ctx context.Context, params receiver.CreateSettings, rConf component.Config, next consumer.Traces) (receiver.Traces, error) {
-	cfg, ok := rConf.(*Config)
+// createTraces creates a trace receiver based on provided config.
+func createTracesReceiver(
+	_ context.Context,
+	set receiver.CreateSettings,
+	cfg component.Config,
+	consumer consumer.Traces,
+) (receiver.Traces, error) {
+	oCfg, ok := cfg.(*Config)
 	if !ok {
 		return nil, errConfigNotTelemetryAPI
 	}
+	r, err := receivers.GetOrAdd(oCfg, func() (*telemetryAPIReceiver, error) {
+		return newTelemetryAPIReceiver(oCfg, set)
+	})
+	if err != nil {
+		return nil, err
+	}
 
-	return newTelemetryAPIReceiver(cfg, next, params)
+	//r.tracesConsumer = consumer
+
+	return r, nil
 }
+
+// createLogsReceiver creates a logs receiver based on provided config.
+func createLogsReceiver(
+	_ context.Context,
+	set receiver.CreateSettings,
+	cfg component.Config,
+	consumer consumer.Logs,
+) (receiver.Logs, error) {
+	oCfg, ok := cfg.(*Config)
+	if !ok {
+		return nil, errConfigNotTelemetryAPI
+	}
+	r, err := receivers.GetOrAdd(oCfg, func() (*telemetryAPIReceiver, error) {
+		return newTelemetryAPIReceiver(oCfg, set)
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.Unwrap().registerLogsConsumer(consumer)
+
+	return r, nil
+}
+
+// https://github.com/open-telemetry/opentelemetry-collector/blob/v0.73.0/receiver/otlpreceiver/factory.go#L134
+// This is the map of already created receivers for particular configurations.
+// We maintain this map because the Factory is asked trace and metric receivers separately
+// when it gets CreateTracesReceiver() and CreateMetricsReceiver() but they must not
+// create separate objects, they must use one Receiver object per configuration.
+// When the receiver is shutdown it should be removed from this map so the same configuration
+// can be recreated successfully.
+var receivers = sharedcomponent.NewSharedComponents[*Config, *telemetryAPIReceiver]()

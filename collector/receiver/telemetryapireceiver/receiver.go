@@ -18,7 +18,6 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -45,7 +44,8 @@ type telemetryAPIReceiver struct {
 	httpServer            *http.Server
 	logger                *zap.Logger
 	queue                 *queue.Queue // queue is a synchronous queue and is used to put the received log events to be dispatched later
-	nextConsumer          consumer.Traces
+	tracesConsumer        consumer.Traces
+	logsConsumer          consumer.Logs
 	lastPlatformStartTime string
 	lastPlatformEndTime   string
 	extensionID           string
@@ -107,23 +107,29 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	var slice []event
-	if err := json.Unmarshal(body, &slice); err != nil {
-		r.logger.Error("error unmarshalling body", zap.Error(err))
-		return
-	}
+	messages, err := parseLogsAPIPayload(body)
 
-	for _, el := range slice {
-		r.logger.Debug(fmt.Sprintf("Event: %s", el.Type), zap.Any("event", el))
-		switch el.Type {
+	/*
+		var slice []event
+		if err := json.Unmarshal(body, &slice); err != nil {
+			r.logger.Error("error unmarshalling body", zap.Error(err))
+			return
+		}
+	*/
+
+	for _, message := range messages {
+		r.logger.Debug(fmt.Sprintf("Event: %s", message.logType), zap.Any("event", message))
+		switch message.logType {
 		// Function initialization started.
 		case string(telemetryapi.PlatformInitStart):
-			r.logger.Info(fmt.Sprintf("Init start: %s", r.lastPlatformStartTime), zap.Any("event", el))
-			r.lastPlatformStartTime = el.Time
+			r.logger.Info(fmt.Sprintf("Init start: %s", r.lastPlatformStartTime), zap.Any("event", message))
+			r.lastPlatformStartTime = message.time.String()
 		// Function initialization completed.
 		case string(telemetryapi.PlatformInitRuntimeDone):
-			r.logger.Info(fmt.Sprintf("Init end: %s", r.lastPlatformEndTime), zap.Any("event", el))
-			r.lastPlatformEndTime = el.Time
+			r.logger.Info(fmt.Sprintf("Init end: %s", r.lastPlatformEndTime), zap.Any("event", message))
+			r.lastPlatformEndTime = message.time.String()
+		case string(telemetryapi.Function):
+			r.logger.Info(fmt.Sprintf("Function Log Event: %s", message.stringRecord), zap.Any("event", message))
 		}
 		// TODO: add support for additional events, see https://docs.aws.amazon.com/lambda/latest/dg/telemetry-api.html
 		// A report of function initialization.
@@ -147,7 +153,7 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 	}
 	if len(r.lastPlatformStartTime) > 0 && len(r.lastPlatformEndTime) > 0 {
 		if td, err := r.createPlatformInitSpan(r.lastPlatformStartTime, r.lastPlatformEndTime); err == nil {
-			err := r.nextConsumer.ConsumeTraces(context.Background(), td)
+			err := r.tracesConsumer.ConsumeTraces(context.Background(), td)
 			if err == nil {
 				r.lastPlatformEndTime = ""
 				r.lastPlatformStartTime = ""
@@ -157,8 +163,8 @@ func (r *telemetryAPIReceiver) httpHandler(w http.ResponseWriter, req *http.Requ
 		}
 	}
 
-	r.logger.Debug("logEvents received", zap.Int("count", len(slice)), zap.Int64("queue_length", r.queue.Len()))
-	slice = nil
+	r.logger.Debug("logEvents received", zap.Int("count", len(messages)), zap.Int64("queue_length", r.queue.Len()))
+	//slice = nil
 }
 
 func (r *telemetryAPIReceiver) createPlatformInitSpan(start, end string) (ptrace.Traces, error) {
@@ -190,7 +196,6 @@ func (r *telemetryAPIReceiver) createPlatformInitSpan(start, end string) (ptrace
 
 func newTelemetryAPIReceiver(
 	cfg *Config,
-	next consumer.Traces,
 	set receiver.CreateSettings,
 ) (*telemetryAPIReceiver, error) {
 	envResourceMap := map[string]string{
@@ -212,12 +217,12 @@ func newTelemetryAPIReceiver(
 			r.Attributes().PutStr(resourceAttribute, val)
 		}
 	}
+
 	return &telemetryAPIReceiver{
-		logger:       set.Logger,
-		queue:        queue.New(initialQueueSize),
-		nextConsumer: next,
-		extensionID:  cfg.extensionID,
-		resource:     r,
+		logger:      set.Logger,
+		queue:       queue.New(initialQueueSize),
+		extensionID: cfg.extensionID,
+		resource:    r,
 	}, nil
 }
 
@@ -231,4 +236,20 @@ func listenOnAddress() string {
 	}
 
 	return addr
+}
+
+func (r *telemetryAPIReceiver) registerLogsConsumer(lc consumer.Logs) error {
+	if lc == nil {
+		return component.ErrNilNextConsumer
+	}
+	r.logsConsumer = lc
+	return nil
+}
+
+func (r *telemetryAPIReceiver) registerTraceConsumer(tc consumer.Traces) error {
+	if tc == nil {
+		return component.ErrNilNextConsumer
+	}
+	r.tracesConsumer = tc
+	return nil
 }
